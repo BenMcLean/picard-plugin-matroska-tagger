@@ -16,3 +16,5 @@ authors = ["Ben McLean"]
 license = "GPL-2.0-or-later"
 license_url = "https://www.gnu.org/licenses/gpl-2.0.html"
 categories = ["formats"]
+homepage = "https://github.com/BenMcLean/picard-plugin-matroska-tagger"
+report_bugs_to = "https://github.com/BenMcLean/picard-plugin-matroska-tagger/issues"
