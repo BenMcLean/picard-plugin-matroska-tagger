@@ -1,0 +1,18 @@
+uuid = "1c97b575-792b-4e65-b390-60b2d87b6abd"
+name = "Matroska Tagger"
+description = "Read and write tags in Matroska (.mkv, .mka) files via MKVToolNix."
+long_description = """
+Adds support for reading and writing tags in Matroska video (.mkv) and audio (.mka) files.
+
+Requires [MKVToolNix](https://mkvtoolnix.download) to be installed. The folder containing
+`mkvmerge`, `mkvextract` and `mkvpropedit` can be set in the plugin's options page; leave it
+empty to use the system PATH.
+
+Options:
+- Remove chapter data when saving.
+- Use the original release date (instead of this release's date) as the DATE tag."""
+api = ["3.0"]
+authors = ["Ben McLean"]
+license = "GPL-2.0-or-later"
+license_url = "https://www.gnu.org/licenses/gpl-2.0.html"
+categories = ["formats"]
