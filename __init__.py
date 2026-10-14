@@ -513,6 +513,9 @@ class _MatroskaFileBase(File):
 			except OSError:
 				pass
 
+		# Picard's base class doesn't set ~extension/~filename/~dirname itself; formats must do it.
+		self._update_filesystem_metadata(metadata)
+
 		return metadata
 
 	def _save(self, filename, metadata):
