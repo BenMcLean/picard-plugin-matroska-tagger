@@ -30,9 +30,6 @@ from picard.plugin3.api import (
 	PluginApi,
 )
 
-# Set in enable(); the File subclasses are instantiated by Picard so they can't be handed the API directly.
-_api: PluginApi = None
-
 
 # ---------------------------------------------------------------------------
 # Tag mappings
@@ -155,9 +152,9 @@ def _subprocess_flags():
 	return flags
 
 
-def _run(args, **kwargs):
+def _run(args, logger, **kwargs):
 	"""Run a subprocess, returning CompletedProcess. Raises on non-zero exit."""
-	_api.logger.debug("running %r", args)
+	logger.debug("running %r", args)
 	already_captured = "capture_output" in kwargs or "stdout" in kwargs
 	if not already_captured:
 		kwargs["capture_output"] = True
@@ -165,15 +162,11 @@ def _run(args, **kwargs):
 	if not already_captured:
 		if result.stdout:
 			for line in result.stdout.decode("utf-8", errors="replace").splitlines():
-				_api.logger.debug("stdout: %s", line)
+				logger.debug("stdout: %s", line)
 		if result.stderr:
 			for line in result.stderr.decode("utf-8", errors="replace").splitlines():
-				_api.logger.debug("stderr: %s", line)
+				logger.debug("stderr: %s", line)
 	return result
-
-
-def _get_tooldir():
-	return _api.plugin_config["mkvtoolnix_dir"].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +218,7 @@ def _sort_field_for(mkv_name, target_type_value):
 	return None
 
 
-def _tags_xml(metadata):
+def _tags_xml(metadata, use_original_date):
 	"""Combined XML with level-50 (album), level-60 (disc), and level-30 (track) Tag blocks.
 
 	All blocks have no UID in their Targets, which is the spec-correct form for
@@ -274,7 +267,7 @@ def _tags_xml(metadata):
 	for value in metadata.getall("albumartist"):
 		if value:
 			_write_simple(w, "ALBUM_ARTIST", value)
-	date_field = "originaldate" if _api.plugin_config["mkv_use_original_date"] else "date"
+	date_field = "originaldate" if use_original_date else "date"
 	for value in metadata.getall(date_field):
 		if value:
 			_write_simple(w, "DATE", value)
@@ -324,11 +317,11 @@ def _tags_xml(metadata):
 # ---------------------------------------------------------------------------
 
 
-def _parse_tags_xml(xml_path, metadata):
+def _parse_tags_xml(xml_path, metadata, logger):
 	"""Read a Matroska tags XML file and populate a Metadata object."""
 	f = QFile(xml_path)
 	if not f.open(QIODevice.OpenModeFlag.ReadOnly):
-		_api.logger.warning("failed to open tags XML %r", xml_path)
+		logger.warning("failed to open tags XML %r", xml_path)
 		return
 
 	reader = QXmlStreamReader(f)
@@ -435,7 +428,7 @@ def _parse_tags_xml(xml_path, metadata):
 
 	f.close()
 	if reader.hasError():
-		_api.logger.warning("failed to parse tags XML %r: %s", xml_path, reader.errorString())
+		logger.warning("failed to parse tags XML %r: %s", xml_path, reader.errorString())
 
 
 # ---------------------------------------------------------------------------
@@ -451,13 +444,18 @@ class _MatroskaFileBase(File):
 	_save()  generates a Matroska tags XML and feeds it to mkvpropedit.
 	"""
 
+	def __init__(self, *args, **kwargs):
+		# Picard instantiates File subclasses itself, so the API is looked up here rather than passed in.
+		self.api = PluginApi.get_api()
+		super().__init__(*args, **kwargs)
+
 	@classmethod
 	def supports_tag(cls, name):
 		return name in _SUPPORTED_TAGS
 
 	def _load(self, filename):
-		_api.logger.debug("loading %r", filename)
-		tooldir = _get_tooldir()
+		self.api.logger.debug("loading %r", filename)
+		tooldir = self.api.plugin_config["mkvtoolnix_dir"].strip()
 		metadata = Metadata()
 
 		# Read file info (duration, codec) via mkvmerge --identify
@@ -465,6 +463,7 @@ class _MatroskaFileBase(File):
 		try:
 			result = _run(
 				[mkvmerge, "--identify", "--identification-format", "json", filename],
+				self.api.logger,
 				capture_output=True,
 				text=True,
 				encoding="utf-8",
@@ -480,9 +479,9 @@ class _MatroskaFileBase(File):
 				"Options > Plugins > Matroska Tagger."
 			)
 		except subprocess.CalledProcessError as e:
-			_api.logger.warning("mkvmerge failed on %r: %s", filename, e)
+			self.api.logger.warning("mkvmerge failed on %r: %s", filename, e)
 		except (json.JSONDecodeError, KeyError) as e:
-			_api.logger.warning("could not parse mkvmerge output for %r: %s", filename, e)
+			self.api.logger.warning("could not parse mkvmerge output for %r: %s", filename, e)
 
 		# Read existing tags via mkvextract tags
 		mkvextract = _tool_path("mkvextract", tooldir)
@@ -499,7 +498,7 @@ class _MatroskaFileBase(File):
 			if result.returncode >= 2:
 				raise subprocess.CalledProcessError(result.returncode, result.args)
 			if os.path.getsize(tmp_path) > 0:
-				_parse_tags_xml(tmp_path, metadata)
+				_parse_tags_xml(tmp_path, metadata, self.api.logger)
 		except FileNotFoundError:
 			raise Exception(
 				f"mkvextract not found at {mkvextract!r}. "
@@ -507,7 +506,7 @@ class _MatroskaFileBase(File):
 				"Options > Plugins > Matroska Tagger."
 			)
 		except subprocess.CalledProcessError as e:
-			_api.logger.warning("mkvextract failed on %r: %s", filename, e)
+			self.api.logger.warning("mkvextract failed on %r: %s", filename, e)
 		finally:
 			try:
 				os.unlink(tmp_path)
@@ -517,12 +516,12 @@ class _MatroskaFileBase(File):
 		return metadata
 
 	def _save(self, filename, metadata):
-		_api.logger.debug("saving %r", filename)
-		tooldir = _get_tooldir()
+		self.api.logger.debug("saving %r", filename)
+		tooldir = self.api.plugin_config["mkvtoolnix_dir"].strip()
 		mkvpropedit = _tool_path("mkvpropedit", tooldir)
 
-		tags_xml = _tags_xml(metadata)
-		_api.logger.debug("tags XML: %s", tags_xml)
+		tags_xml = _tags_xml(metadata, self.api.plugin_config["mkv_use_original_date"])
+		self.api.logger.debug("tags XML: %s", tags_xml)
 
 		tags_fd, tags_path = tempfile.mkstemp(suffix=".xml", prefix="picard_mkv_")
 		try:
@@ -530,8 +529,8 @@ class _MatroskaFileBase(File):
 				f.write(tags_xml)
 
 			try:
-				if _api.plugin_config["mkv_strip_chapters"]:
-					_run([mkvpropedit, filename, "--chapters", ""])
+				if self.api.plugin_config["mkv_strip_chapters"]:
+					_run([mkvpropedit, filename, "--chapters", ""], self.api.logger)
 
 				title = metadata.get("title", "")
 				_run(
@@ -550,7 +549,8 @@ class _MatroskaFileBase(File):
 						"all:",
 						"--tags",
 						f"global:{tags_path}",
-					]
+					],
+					self.api.logger,
 				)
 			except FileNotFoundError:
 				raise Exception(
@@ -650,7 +650,7 @@ class _MkvOptionsPage(OptionsPage):
 		for name in ("mkvpropedit", "mkvmerge", "mkvextract"):
 			path = _tool_path(name, tooldir)
 			try:
-				_run([path, "--version"], capture_output=True)
+				_run([path, "--version"], self.api.logger, capture_output=True)
 				results.append(f"✓ {name}")
 			except FileNotFoundError:
 				results.append(f"✗ {name} not found")
@@ -686,8 +686,6 @@ def _default_tooldir():
 
 
 def enable(api: PluginApi):
-	global _api
-	_api = api
 	api.plugin_config.register_option("mkvtoolnix_dir", _default_tooldir())
 	api.plugin_config.register_option("mkv_strip_chapters", False)
 	api.plugin_config.register_option("mkv_use_original_date", True)
